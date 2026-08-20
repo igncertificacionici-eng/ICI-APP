@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ICI · Carga fotográfica de puntos geodésicos</title>
+<meta name="description" content="Sistema de carga fotográfica en campo para certificación de puntos geodésicos orden C — ICI">
+<link rel="icon" type="image/png" href="assets/logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="contour-field" aria-hidden="true"></div>
+
+<header class="site-header">
+  <div class="header-inner">
+    <div class="brand">
+      <img src="assets/logo.png" alt="ICI" class="brand-logo">
+      <div class="brand-text">
+        <span class="brand-name">ICI</span>
+        <span class="brand-tag">Certificación de Puntos Geodésicos</span>
+      </div>
+    </div>
+    <div class="header-status">
+      <span class="status-dot" id="connStatusDot"></span>
+      <span id="connStatusText">Conectando con el servidor…</span>
+    </div>
+  </div>
+</header>
+
+<main>
+
+  <section class="hero">
+    <div class="hero-inner">
+      <span class="eyebrow">Orden C · Seguimiento en tiempo real</span>
+      <h1>Carga de evidencia fotográfica de campo</h1>
+      <p class="hero-lede">
+        Cada fotografía se almacena en Drive respetando el orden normado de
+        monumentación, y conserva toda su metadata original — fecha, hora y
+        coordenadas GPS de la cámara — para que gabinete pueda verificar la
+        calidad del trabajo apenas se sube desde el punto.
+      </p>
+    </div>
+  </section>
+
+  <section class="panel-grid">
+
+    <div class="form-column">
+
+      <div id="pointsContainer"></div>
+
+      <button type="button" id="addPointBtn" class="btn btn-outline btn-add">
+        <span aria-hidden="true">＋</span> Agregar otro punto
+      </button>
+
+      <p class="helper-note">
+        ¿Vas a levantar varios puntos en esta salida? Agrega uno por cada
+        código y carga sus fotos por separado — cada foto se sube apenas la
+        seleccionas, no hace falta esperar a terminar todos los puntos.
+      </p>
+    </div>
+
+    <aside class="log-column">
+      <div class="log-panel">
+        <div class="log-panel-header">
+          <h2>Bitácora de carga</h2>
+          <span class="log-count" id="logCount">0 archivos</span>
+        </div>
+        <div class="log-empty" id="logEmpty">
+          Aquí verás la confirmación de cada foto o video apenas se guarde en
+          Drive, con su punto, carpeta y hora exacta.
+        </div>
+        <ol class="log-list" id="logList" reversed></ol>
+      </div>
+    </aside>
+
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <span>ICI © <span id="year"></span> — Sistema interno de campo para certificación de puntos geodésicos.</span>
+</footer>
+
+<!-- Plantilla de un bloque de "punto" (se clona por JS) -->
+<template id="pointBlockTemplate">
+  <article class="point-card" data-point-block>
+    <div class="point-card-head">
+      <div class="point-select-group">
+        <label>
+          <span class="field-label">Código de punto</span>
+          <select class="point-select" data-role="point-select">
+            <option value="">Selecciona un código…</option>
+          </select>
+        </label>
+      </div>
+      <button type="button" class="btn-remove" data-role="remove-point" title="Quitar este punto" aria-label="Quitar este punto">✕</button>
+    </div>
+
+    <div class="categories-grid" data-role="categories-grid"></div>
+  </article>
+</template>
+
+<!-- Plantilla de una categoría (carpeta normada) dentro de un punto -->
+<template id="categoryCardTemplate">
+  <div class="category-card" data-role="category-card">
+    <button type="button" class="category-toggle" data-role="category-toggle">
+      <span class="category-id" data-role="category-id"></span>
+      <span class="category-name" data-role="category-name"></span>
+      <span class="category-count" data-role="category-count"></span>
+      <span class="category-chevron" aria-hidden="true">›</span>
+    </button>
+
+    <div class="category-body" data-role="category-body" hidden>
+      <div class="upload-actions">
+        <label class="btn btn-primary btn-capture">
+          <input type="file" data-role="input-capture" accept="image/*" capture="environment" hidden>
+          <span data-role="capture-label">📷 Tomar foto</span>
+        </label>
+        <label class="btn btn-outline btn-browse">
+          <input type="file" data-role="input-browse" accept="image/*" multiple hidden>
+          Subir desde galería
+        </label>
+      </div>
+
+      <ul class="file-list" data-role="file-list"></ul>
+    </div>
+  </div>
+</template>
+
+<!-- Plantilla de una fila de archivo en carga -->
+<template id="fileRowTemplate">
+  <li class="file-row" data-role="file-row">
+    <span class="file-row-icon" data-role="file-icon">⏳</span>
+    <span class="file-row-name" data-role="file-name"></span>
+    <span class="file-row-status" data-role="file-status">En cola…</span>
+  </li>
+</template>
+
+<script src="script.js"></script>
+</body>
+</html>
