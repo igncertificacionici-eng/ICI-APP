@@ -6,7 +6,7 @@
    Ver README.md para el paso a paso de despliegue.
    ============================================================ */
 
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwgvMKttFzJuS4lrXvu-DlVgDVaLEp2Y1G2I4g_3b6DnvLSGb1r88p9rqKkeymKnWHh5g/exec';
+const APPS_SCRIPT_URL = 'PEGA_AQUI_LA_URL_DE_TU_APPS_SCRIPT_/exec';
 
 // Se usa solo si el backend no responde (por ejemplo, mientras pruebas el
 // diseño antes de desplegar Apps Script). En producción, la configuración
@@ -173,11 +173,15 @@ function buildCategoryCard(category, pointSelectEl) {
       // conserve su metadata de cámara (fabricante, modelo) y prohíbe fotos
       // que vengan de WhatsApp u otras apps de edición/mensajería. Si falta,
       // se bloquea la carga aquí mismo — no hay opción de subirla igual.
+      // De paso, se aprovecha la fecha de captura del EXIF (si la trae)
+      // para nombrar el archivo como IMG_añomesdia_horaminutosegundo.
+      let captureDateTime = null;
       if (!isVideo && file.type && file.type.indexOf('image') === 0) {
-        const ok = await requireCameraExif(file);
-        if (!ok) continue;
+        const check = await requireCameraExif(file);
+        if (!check.ok) continue;
+        captureDateTime = check.captureDateTime;
       }
-      queueUpload(file, pointCode, category, fileList, countEl, locationPromise);
+      queueUpload(file, pointCode, category, fileList, countEl, locationPromise, captureDateTime, isVideo);
     }
   }
 
@@ -237,7 +241,7 @@ async function requireCameraExif(file) {
       'JPEG/JPG originales de la cámara. Revisa el formato de cámara del ' +
       'celular (algunos guardan en HEIC por defecto) y vuelve a tomarla.'
     );
-    return false;
+    return { ok: false, captureDateTime: null };
   }
 
   let exif = null;
@@ -254,11 +258,11 @@ async function requireCameraExif(file) {
       'Se subirá, pero revisa manualmente sus propiedades antes de enviar el ' +
       'expediente al IGN (Artículo 24).'
     );
-    return true;
+    return { ok: true, captureDateTime: null };
   }
 
   const tieneCamara = exif && exif.make && exif.model;
-  if (tieneCamara) return true;
+  if (tieneCamara) return { ok: true, captureDateTime: exif.dateTimeOriginal || null };
 
   alert(
     'La foto "' + file.name + '" NO tiene datos de cámara en su metadata ' +
@@ -267,7 +271,7 @@ async function requireCameraExif(file) {
     'app — no se puede subir así.\n\n' +
     'Vuelve a tomarla con el botón "Tomar foto" directamente desde aquí.'
   );
-  return false;
+  return { ok: false, captureDateTime: null };
 }
 
 // Lector mínimo de EXIF (JPEG/TIFF): extrae Fabricante (0x010F), Modelo
@@ -307,7 +311,10 @@ function readBasicExif(arrayBuffer) {
       return {
         make: ifd0[0x010f] || null,
         model: ifd0[0x0110] || null,
-        dateTimeOriginal: dateTimeOriginal,
+        // 0x9003 (SubIFD) es la fecha de disparo; 0x0132 (IFD0) es la de
+        // "última modificación" y sirve de respaldo si la cámara no llenó
+        // la primera.
+        dateTimeOriginal: dateTimeOriginal || ifd0[0x0132] || null,
       };
     }
 
@@ -355,7 +362,7 @@ function readExifIfd(view, tiffOffset, ifdOffset, little) {
 // ------------------------------------------------------------
 // Carga de archivos
 // ------------------------------------------------------------
-function queueUpload(file, pointCode, category, fileListEl, countEl, locationPromise) {
+function queueUpload(file, pointCode, category, fileListEl, countEl, locationPromise, captureDateTime, isVideo) {
   const row = els.fileRowTpl.content.firstElementChild.cloneNode(true);
   const icon = row.querySelector('[data-role="file-icon"]');
   const nameEl = row.querySelector('[data-role="file-name"]');
@@ -367,11 +374,12 @@ function queueUpload(file, pointCode, category, fileListEl, countEl, locationPro
   icon.textContent = '⏳';
   fileListEl.prepend(row);
 
-  uploadFile(file, pointCode, category, locationPromise)
+  uploadFile(file, pointCode, category, locationPromise, captureDateTime, isVideo)
     .then(function (result) {
       row.classList.remove('is-uploading');
       row.classList.add('is-success');
       icon.textContent = '✅';
+      nameEl.textContent = result.fileName + ' · ' + formatSize(file.size);
       statusEl.innerHTML = '<a href="' + result.fileUrl + '" target="_blank" rel="noopener">Ver en Drive</a>';
       bumpCategoryCount(countEl);
       logEntry({ ok: true, pointCode: pointCode, category: category, fileName: result.fileName, fileUrl: result.fileUrl });
@@ -388,11 +396,12 @@ function queueUpload(file, pointCode, category, fileListEl, countEl, locationPro
         row.classList.add('is-uploading');
         icon.textContent = '⏳';
         statusEl.textContent = 'Subiendo…';
-        uploadFile(file, pointCode, category, locationPromise)
+        uploadFile(file, pointCode, category, locationPromise, captureDateTime, isVideo)
           .then(function (result) {
             row.classList.remove('is-uploading');
             row.classList.add('is-success');
             icon.textContent = '✅';
+            nameEl.textContent = result.fileName + ' · ' + formatSize(file.size);
             statusEl.innerHTML = '<a href="' + result.fileUrl + '" target="_blank" rel="noopener">Ver en Drive</a>';
             bumpCategoryCount(countEl);
             logEntry({ ok: true, pointCode: pointCode, category: category, fileName: result.fileName, fileUrl: result.fileUrl });
@@ -409,7 +418,7 @@ function queueUpload(file, pointCode, category, fileListEl, countEl, locationPro
     });
 }
 
-function uploadFile(file, pointCode, category, locationPromise) {
+function uploadFile(file, pointCode, category, locationPromise, captureDateTime, isVideo) {
   const locReady = locationPromise ? locationPromise.catch(function () { return null; }) : Promise.resolve(null);
 
   return Promise.all([fileToBase64(file), locReady]).then(function (results) {
@@ -427,6 +436,11 @@ function uploadFile(file, pointCode, category, locationPromise) {
       // Va aparte del archivo — el backend la guarda como descripción del
       // archivo en Drive, nunca dentro del JPEG.
       location: location,
+      // Fecha de captura leída del EXIF (formato "AAAA:MM:DD HH:MM:SS"), o
+      // null si no la trae (típico en videos) — el backend arma el nombre
+      // final IMG_/VID_AAAAMMDD_HHMMSS a partir de esto.
+      captureDateTime: captureDateTime || null,
+      isVideo: !!isVideo,
     };
 
     // Content-Type text/plain evita el preflight CORS que Apps Script no
