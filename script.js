@@ -6,7 +6,7 @@
    Ver README.md para el paso a paso de despliegue.
    ============================================================ */
 
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbylDirz2cfgoHR723ByDaR4AGJ5du2C3O-7btMjQS7amADPmOx5zc19B4RKN-SePiz9jA/exec';
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwgvMKttFzJuS4lrXvu-DlVgDVaLEp2Y1G2I4g_3b6DnvLSGb1r88p9rqKkeymKnWHh5g/exec';
 
 // Se usa solo si el backend no responde (por ejemplo, mientras pruebas el
 // diseño antes de desplegar Apps Script). En producción, la configuración
