@@ -142,7 +142,17 @@ function buildCategoryCard(category, pointSelectEl) {
   const countEl = card.querySelector('[data-role="category-count"]');
   countEl.textContent = '0';
 
-  function onFilesChosen(fileInputEvent) {
+  // Se dispara la geolocalización apenas se TOCA "Tomar foto" (antes de que
+  // se abra la cámara), para que la coordenada quede lo más cerca posible
+  // del instante real de la toma. Se guarda como descripción del archivo en
+  // Drive — nunca dentro del JPEG — así la foto original no se toca.
+  let pendingLocation = null;
+  const captureWrapper = card.querySelector('.btn-capture');
+  captureWrapper.addEventListener('click', function () {
+    pendingLocation = getLocationSnapshot();
+  });
+
+  async function onFilesChosen(fileInputEvent, isCaptureFlow) {
     const files = Array.from(fileInputEvent.target.files || []);
     fileInputEvent.target.value = ''; // permite volver a elegir el mismo archivo
     if (!files.length) return;
@@ -153,21 +163,199 @@ function buildCategoryCard(category, pointSelectEl) {
       return;
     }
 
-    files.forEach(function (file) {
-      queueUpload(file, pointCode, category, fileList, countEl);
-    });
+    // Se toma la ubicación que empezó a pedirse al tocar "Tomar foto" (o no
+    // se pide ninguna si el archivo viene de la galería).
+    const locationPromise = isCaptureFlow ? pendingLocation : Promise.resolve(null);
+    pendingLocation = null;
+
+    for (const file of files) {
+      // El Art. 24 de los Lineamientos IGN exige "sí o sí" que la foto
+      // conserve su metadata de cámara (fabricante, modelo) y prohíbe fotos
+      // que vengan de WhatsApp u otras apps de edición/mensajería. Si falta,
+      // se bloquea la carga aquí mismo — no hay opción de subirla igual.
+      if (!isVideo && file.type && file.type.indexOf('image') === 0) {
+        const ok = await requireCameraExif(file);
+        if (!ok) continue;
+      }
+      queueUpload(file, pointCode, category, fileList, countEl, locationPromise);
+    }
   }
 
-  inputCapture.addEventListener('change', onFilesChosen);
-  inputBrowse.addEventListener('change', onFilesChosen);
+  inputCapture.addEventListener('change', function (e) { onFilesChosen(e, true); });
+  inputBrowse.addEventListener('change', function (e) { onFilesChosen(e, false); });
 
   return card;
 }
 
 // ------------------------------------------------------------
+// Ubicación al instante de la toma (no se escribe en la foto, ver arriba)
+// ------------------------------------------------------------
+function getLocationSnapshot() {
+  return new Promise(function (resolve) {
+    if (!('geolocation' in navigator)) { resolve(null); return; }
+
+    const timer = setTimeout(function () { resolve(null); }, 8000);
+
+    navigator.geolocation.getCurrentPosition(
+      function (pos) {
+        clearTimeout(timer);
+        resolve({
+          lat: pos.coords.latitude,
+          lon: pos.coords.longitude,
+          accuracy: pos.coords.accuracy,
+          capturedAt: new Date(pos.timestamp).toISOString(),
+        });
+      },
+      function () {
+        clearTimeout(timer);
+        resolve(null); // permiso denegado u otro error: no bloquea la carga
+      },
+      { enableHighAccuracy: true, timeout: 7500, maximumAge: 0 }
+    );
+  });
+}
+
+// ------------------------------------------------------------
+// Verificación de metadata EXIF (Artículo 24 de los Lineamientos IGN)
+// ------------------------------------------------------------
+// El IGN exige "sí o sí" que la foto conserva sus datos de cámara (marca,
+// modelo, fecha) y rechaza fotos que hayan pasado por WhatsApp, Instagram,
+// Telegram u otro editor — precisamente porque esas apps eliminan ese
+// bloque de datos. Por eso esto NO es una advertencia salteable: si falta,
+// se bloquea la carga sin opción de continuar igual. Esta función solo LEE
+// el EXIF ya presente en el archivo; nunca modifica la foto ni le agrega
+// datos que no traiga.
+async function requireCameraExif(file) {
+  // Art. 24.1: debe ser JPEG/JPG. Si el celular la generó en otro formato
+  // (por ejemplo HEIC), no cumple, así que se bloquea también aquí.
+  const nameLooksJpeg = /\.(jpe?g)$/i.test(file.name || '');
+  const typeLooksJpeg = !file.type || file.type === 'image/jpeg' || file.type === 'image/jpg';
+  if (!nameLooksJpeg && !typeLooksJpeg) {
+    alert(
+      'La foto "' + file.name + '" no está en formato JPEG/JPG.\n\n' +
+      'El Artículo 24 de los Lineamientos IGN exige que las fotos sean ' +
+      'JPEG/JPG originales de la cámara. Revisa el formato de cámara del ' +
+      'celular (algunos guardan en HEIC por defecto) y vuelve a tomarla.'
+    );
+    return false;
+  }
+
+  let exif = null;
+  try {
+    const buffer = await file.arrayBuffer();
+    exif = readBasicExif(buffer);
+  } catch (err) {
+    console.error('No se pudo leer el EXIF de ' + file.name, err);
+    // Fallo de nuestro propio lector (archivo raro, corrupto, etc.), no
+    // necesariamente responsabilidad de la foto: se avisa pero no se
+    // bloquea, para no rechazar fotos válidas por una limitación nuestra.
+    alert(
+      'No se pudo verificar automáticamente la metadata de "' + file.name + '". ' +
+      'Se subirá, pero revisa manualmente sus propiedades antes de enviar el ' +
+      'expediente al IGN (Artículo 24).'
+    );
+    return true;
+  }
+
+  const tieneCamara = exif && exif.make && exif.model;
+  if (tieneCamara) return true;
+
+  alert(
+    'La foto "' + file.name + '" NO tiene datos de cámara en su metadata ' +
+    '(marca/modelo). El Artículo 24 de los Lineamientos IGN exige esa ' +
+    'información sí o sí, y no acepta fotos reenviadas por WhatsApp u otra ' +
+    'app — no se puede subir así.\n\n' +
+    'Vuelve a tomarla con el botón "Tomar foto" directamente desde aquí.'
+  );
+  return false;
+}
+
+// Lector mínimo de EXIF (JPEG/TIFF): extrae Fabricante (0x010F), Modelo
+// (0x0110) y Fecha original de captura (0x9003) leyendo directamente los
+// bytes del archivo. No depende de librerías externas.
+function readBasicExif(arrayBuffer) {
+  const view = new DataView(arrayBuffer);
+  if (view.byteLength < 4 || view.getUint16(0) !== 0xffd8) return null; // no es JPEG
+
+  let offset = 2;
+  while (offset + 4 <= view.byteLength) {
+    const marker = view.getUint16(offset);
+    if ((marker & 0xff00) !== 0xff00) break; // marcador inválido, se detiene
+
+    if (marker === 0xffe1) {
+      const segmentLength = view.getUint16(offset + 2);
+      const segmentStart = offset + 4;
+      const isExif =
+        view.getUint32(segmentStart) === 0x45786966 && view.getUint16(segmentStart + 4) === 0x0000;
+      if (!isExif) { offset += 2 + segmentLength; continue; }
+
+      const tiffOffset = segmentStart + 6;
+      const byteOrderMark = view.getUint16(tiffOffset);
+      const little = byteOrderMark === 0x4949;
+      if (!little && byteOrderMark !== 0x4d4d) return null;
+
+      const firstIfdOffset = view.getUint32(tiffOffset + 4, little);
+      const ifd0 = readExifIfd(view, tiffOffset, tiffOffset + firstIfdOffset, little);
+
+      let dateTimeOriginal = null;
+      const exifSubIfdPointer = ifd0[0x8769];
+      if (typeof exifSubIfdPointer === 'number') {
+        const subIfd = readExifIfd(view, tiffOffset, tiffOffset + exifSubIfdPointer, little);
+        dateTimeOriginal = subIfd[0x9003] || null;
+      }
+
+      return {
+        make: ifd0[0x010f] || null,
+        model: ifd0[0x0110] || null,
+        dateTimeOriginal: dateTimeOriginal,
+      };
+    }
+
+    if (marker === 0xffd8 || marker === 0xffd9) { offset += 2; continue; }
+    const segmentLength = view.getUint16(offset + 2);
+    if (segmentLength < 2) break;
+    offset += 2 + segmentLength;
+  }
+  return null;
+}
+
+function readExifIfd(view, tiffOffset, ifdOffset, little) {
+  const entries = {};
+  if (ifdOffset + 2 > view.byteLength) return entries;
+  const count = view.getUint16(ifdOffset, little);
+
+  for (let i = 0; i < count; i++) {
+    const entryOffset = ifdOffset + 2 + i * 12;
+    if (entryOffset + 12 > view.byteLength) break;
+
+    const tag = view.getUint16(entryOffset, little);
+    const type = view.getUint16(entryOffset + 2, little);
+    const numValues = view.getUint32(entryOffset + 4, little);
+    const valueFieldOffset = entryOffset + 8;
+
+    if (type === 2) { // ASCII
+      const byteLength = numValues;
+      const dataOffset = byteLength <= 4 ? valueFieldOffset : tiffOffset + view.getUint32(valueFieldOffset, little);
+      let str = '';
+      for (let j = 0; j < byteLength && dataOffset + j < view.byteLength; j++) {
+        const code = view.getUint8(dataOffset + j);
+        if (code === 0) break;
+        str += String.fromCharCode(code);
+      }
+      entries[tag] = str.trim();
+    } else if (type === 3) { // SHORT
+      entries[tag] = view.getUint16(valueFieldOffset, little);
+    } else if (type === 4) { // LONG
+      entries[tag] = view.getUint32(valueFieldOffset, little);
+    }
+  }
+  return entries;
+}
+
+// ------------------------------------------------------------
 // Carga de archivos
 // ------------------------------------------------------------
-function queueUpload(file, pointCode, category, fileListEl, countEl) {
+function queueUpload(file, pointCode, category, fileListEl, countEl, locationPromise) {
   const row = els.fileRowTpl.content.firstElementChild.cloneNode(true);
   const icon = row.querySelector('[data-role="file-icon"]');
   const nameEl = row.querySelector('[data-role="file-name"]');
@@ -179,7 +367,7 @@ function queueUpload(file, pointCode, category, fileListEl, countEl) {
   icon.textContent = '⏳';
   fileListEl.prepend(row);
 
-  uploadFile(file, pointCode, category)
+  uploadFile(file, pointCode, category, locationPromise)
     .then(function (result) {
       row.classList.remove('is-uploading');
       row.classList.add('is-success');
@@ -200,7 +388,7 @@ function queueUpload(file, pointCode, category, fileListEl, countEl) {
         row.classList.add('is-uploading');
         icon.textContent = '⏳';
         statusEl.textContent = 'Subiendo…';
-        uploadFile(file, pointCode, category)
+        uploadFile(file, pointCode, category, locationPromise)
           .then(function (result) {
             row.classList.remove('is-uploading');
             row.classList.add('is-success');
@@ -221,8 +409,13 @@ function queueUpload(file, pointCode, category, fileListEl, countEl) {
     });
 }
 
-function uploadFile(file, pointCode, category) {
-  return fileToBase64(file).then(function (base64Data) {
+function uploadFile(file, pointCode, category, locationPromise) {
+  const locReady = locationPromise ? locationPromise.catch(function () { return null; }) : Promise.resolve(null);
+
+  return Promise.all([fileToBase64(file), locReady]).then(function (results) {
+    const base64Data = results[0];
+    const location = results[1];
+
     const payload = {
       action: 'upload',
       pointCode: pointCode,
@@ -230,6 +423,10 @@ function uploadFile(file, pointCode, category) {
       fileName: file.name,
       mimeType: file.type || 'application/octet-stream',
       base64Data: base64Data,
+      // Ubicación tomada por el navegador al momento de tocar "Tomar foto".
+      // Va aparte del archivo — el backend la guarda como descripción del
+      // archivo en Drive, nunca dentro del JPEG.
+      location: location,
     };
 
     // Content-Type text/plain evita el preflight CORS que Apps Script no
